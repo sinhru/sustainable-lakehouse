@@ -1,0 +1,122 @@
+#Here is the refined PySpark code specifically optimizing the Delta Lake Dynamic Partitioning implementation. 
+#This script simulates a "Green ETL" pipeline where historical data is preserved without energy-intensive full-table overwrites.
+
+# COMMAND ----------
+# TITLE: 0. Green Configuration (The Foundation)
+# ---------------------------------------------------------
+# By setting partitionOverwriteMode to 'dynamic', Spark will only 
+# delete and rewrite the specific partitions present in the dataframe.
+# 
+# IMPACT: If you process data for "2025-01-05", Spark deletes ONLY that folder.
+# Standard 'static' overwrite would delete the ENTIRE table (years of data) 
+# and rewrite it, wasting massive amounts of energy and I/O.
+
+spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
+
+# Enable optimized writes to reduce small file creation initially
+spark.conf.set("spark.databricks.delta.optimizeWrite.enabled", "true")
+
+# COMMAND ----------
+# TITLE: 1. Initial State Setup (Simulating History)
+# ---------------------------------------------------------
+# Let's create a "History" table with data from Jan 1st and Jan 2nd.
+
+from pyspark.sql.functions import col, lit, rand, to_date
+
+# Generate 2 days of historical data
+df_history = spark.range(0, 2000).withColumn(
+    "transaction_id", col("id")
+).withColumn(
+    "amount", (rand() * 1000).cast("double")
+).withColumn(
+    "txn_date", to_date(lit("2025-01-01")) # Day 1
+).union(
+    spark.range(2000, 4000).withColumn(
+        "transaction_id", col("id")
+    ).withColumn(
+        "amount", (rand() * 1000).cast("double")
+    ).withColumn(
+        "txn_date", to_date(lit("2025-01-02")) # Day 2
+    )
+)
+
+# Initial Write (Full Create)
+(df_history.write
+    .format("delta")
+    .partitionBy("txn_date")
+    .mode("overwrite")
+    .saveAsTable("sustainable_transactions")
+)
+
+print("INITIAL STATE: Table has data for 2025-01-01 and 2025-01-02")
+
+# COMMAND ----------
+# TITLE: 2. The "Green" Write: Dynamic Partition Overwrite
+# ---------------------------------------------------------
+# SCENARIO: We received late-arriving corrections JUST for Jan 2nd.
+#
+# LEGACY WAY (High Carbon): Read whole table, filter, union new data, overwrite everything.
+# GREEN WAY (Low Carbon): Write just the Jan 2nd data. Delta handles the swap.
+
+# New corrected data for Jan 2nd ONLY
+df_correction = spark.range(2000, 4005).withColumn( # Added 5 new rows
+    "transaction_id", col("id")
+).withColumn(
+    "amount", (rand() * 1000).cast("double")
+).withColumn(
+    "txn_date", to_date(lit("2025-01-02")) 
+)
+
+# EXECUTE DYNAMIC OVERWRITE
+# Even though mode is "overwrite", it will NOT touch the "2025-01-01" partition.
+(df_correction.write
+    .format("delta")
+    .mode("overwrite") 
+    .insertInto("sustainable_transactions") # insertInto respects dynamic partition conf
+)
+
+print("UPDATE COMPLETE: Only the 2025-01-02 partition was rewritten.")
+print("The 2025-01-01 partition remained physically untouched on disk (Zero I/O Cost).")
+
+# COMMAND ----------
+# TITLE: 3. Verify Data Integrity
+# ---------------------------------------------------------
+# Prove that Jan 1st data is still there and Jan 2nd is updated.
+
+from pyspark.sql.functions import count
+
+display(
+    spark.read.table("sustainable_transactions")
+    .groupBy("txn_date")
+    .agg(count("*").alias("row_count"))
+    .orderBy("txn_date")
+)
+
+# Expected Output:
+# 2025-01-01: 2000 rows (Untouched)
+# 2025-01-02: 2005 rows (Updated efficiently)
+
+# COMMAND ----------
+# TITLE: 4. Carbon-Aware Maintenance (Compaction)
+# ---------------------------------------------------------
+# While Dynamic Partitioning handles the WRITE efficiency, 
+# we use Z-Order to handle READ efficiency.
+
+def get_grid_carbon_intensity():
+    # Mock API call to check if grid is green
+    # In production: requests.get("https://api.electricitymap.org/...")
+    return 150 # gCO2/kWh (Hypothetical "Green" value)
+
+current_intensity = get_grid_carbon_intensity()
+GREEN_THRESHOLD = 200
+
+if current_intensity < GREEN_THRESHOLD:
+    print(f"Grid is Green ({current_intensity}g). Running energy-intensive Z-Ordering now...")
+    
+    # Z-Order clusters data so future queries skip files
+    spark.sql("""
+        OPTIMIZE sustainable_transactions
+        ZORDER BY (transaction_id)
+    """)
+else:
+    print("Grid is Dirty. Skipping maintenance.")
