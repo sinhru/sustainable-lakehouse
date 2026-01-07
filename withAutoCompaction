@@ -1,3 +1,8 @@
+#Here is a complete Databricks Notebook implementation of a Sustainable Lakehouse. 
+#This code integrates the architectural pillars discussed in my article: Metadata Pruning, Dynamic Partition Overwrites, Z-Order Clustering, and Carbon-Aware Scheduling.
+
+#You can copy this directly into a Databricks Notebook.
+
 # COMMAND ----------
 # TITLE: Setup & Configuration
 # ---------------------------------------------------------
